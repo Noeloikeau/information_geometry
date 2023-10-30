@@ -1,9 +1,11 @@
 # information_geometry
-Python package that numerically calculates the structure of probability distributions and statistical manifolds.
+Python package that numerically calculates the structure of probability distributions on statistical manifolds.
 
 See `statistical_manifolds.ipynb` for examples and `information_geometry.py` for the primary code.
 
 ![image](https://github.com/Noeloikeau/information_geometry/blob/main/example.png)
+
+External resources useful for self-study are: the statistics of [curved exponential families](https://bsi-ni.brain.riken.jp/database/file/85/076.pdf), the theoretical physics of [emergent general relativity](https://arxiv.org/pdf/1310.1831.pdf), the engineering of [optimal sensor network localization](https://www.mdpi.com/1099-4300/19/7/308/htm), and the related but distinct field of [neural manifold reconstruction](https://www.youtube.com/watch?v=vGAhQwH6-90). 
 
 Here we study *information geometry*, a framework for quantifying the geometry of probability distributions. The objects of interest are *statistical manifolds*, which are spaces of probability distributions smoothly connected by changes in parameters. The distance between nearby probability distributions on the manifold is interpreted as their difference in information content with respect to a varied parameter. As a result, the shape ensuing from all possible parameter variations about a point exactly characterizes the "latent" information content of the distribution. This is analogous to paths taken by light being used to characterize a gravitational field -- except that the curvature of the space arises from a distribution of probability, not mass, and the paths are in parameter space, not spacetime. 
 
