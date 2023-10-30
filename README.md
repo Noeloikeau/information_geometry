@@ -34,7 +34,7 @@ Analytically it can be shown that for the Fisher information metric the metric d
 > $\partial_{k}g_{ij} = \langle -I_{i}I_{j}I_{k}+I_{i}I_{kj}+I_{j}I_{ki}\rangle$. 
 
 The connection coefficients relate the metric derivatives to the geodesic acceleration by means of a linear combination of functions. These Christoffel symbols are defined by:
-> $\Gamma^{l}_{ij} = \frac{1}{2}g^{lk} \langle \partial_{i}g_{kj}+\partial_{j}g_{ki}-\partial_{k}g_{ij} \rangle$
+> $\Gamma ^{l}_{ij} = \frac{1}{2}g^{lk} \langle \partial_{i}g_{kj}+\partial_{j}g_{ki}-\partial_{k}g_{ij} \rangle$
 >                  = $g^{lk} \langle I_{ij}I_{k}-\frac{1}{2}I_{i}I_{j}I_{k}\rangle$
 
 where the second equality is the analytic solution obtained for the Fisher information metric specifically, and $g^{lk}$ is the inverse matrix of $g_{lk}$. Note the implicit summation over repeated indices.
