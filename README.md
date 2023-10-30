@@ -1,5 +1,6 @@
 # information_geometry
 Python package that numerically calculates the structure of probability distributions and statistical manifolds.
+
 See `statistical_manifolds.ipynb` for examples and `information_geometry.py` for the primary code.
 
 ![image](https://github.com/Noeloikeau/information_geometry/blob/main/example.png)
