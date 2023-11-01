@@ -1,13 +1,13 @@
 # information_geometry
-Python package that numerically calculates the structure of probability distributions on statistical manifolds.
+This library implements *information geometry*, a framework for quantifying the geometry of probability distributions. 
 
 See `statistical_manifolds.ipynb` for examples and `information_geometry.py` for the primary code.
 
 ![image](https://github.com/Noeloikeau/information_geometry/blob/main/example.png)
 
-For external references from different backgrounds, see [statistical manifold learning](https://proceedings.mlr.press/v32/suna14.pdf) (for machine learning & neuroscience), [curved exponential families](https://bsi-ni.brain.riken.jp/database/file/85/076.pdf) (for pure math), [emergent general relativity](https://arxiv.org/pdf/1310.1831.pdf) (for theoretical physics), [sensor network localization](https://www.mdpi.com/1099-4300/19/7/308/htm) (for engineering & optimization). 
+For external references on this subject from different backgrounds, see [statistical manifold learning](https://proceedings.mlr.press/v32/suna14.pdf) (machine learning & neuroscience), [curved exponential families](https://bsi-ni.brain.riken.jp/database/file/85/076.pdf) (pure math), [emergent general relativity](https://arxiv.org/pdf/1310.1831.pdf) (theoretical physics), [sensor network localization](https://www.mdpi.com/1099-4300/19/7/308/htm) (engineering & optimization). 
 
-Here we study *information geometry*, a framework for quantifying the geometry of probability distributions. The objects of interest are *statistical manifolds*, which are spaces of probability distributions smoothly connected by changes in parameters. The distance between nearby probability distributions on the manifold is interpreted as their difference in information content with respect to a varied parameter. As a result, the shape ensuing from all possible parameter variations about a point exactly characterizes the "latent" information content of the distribution. This is analogous to paths taken by light being used to characterize a gravitational field -- except that the curvature of the space arises from a distribution of probability, not mass, and the paths are in parameter space, not spacetime. 
+The objects of interest are *statistical manifolds*, which are spaces of smoothly connected probability distributions that differ by changes in parameters (such as varying the mean and standard deviation). The distance on the manifold between nearby distributions is interpreted as their difference in information content with respect to a pair of parameters. As a result, the shape ensuing from all possible variations about a point in parameter space exactly characterizes the "latent" information content of the distribution -- that is, its curvature. This is analogous to how the paths taken by light in general relativity characterize a gravitational field -- except that the curvature of the space arises from a parameterized distribution of probabilities, not mass, and the paths are in parameter space, not spacetime. 
 
 We consider normalized probability density functions $f(x,a):R^D\times R^M\rightarrow R$ such that $\int_{X} f(x,a) dx = 1$, where
 >  $x$ : D-dimensional random variable;
