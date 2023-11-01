@@ -65,7 +65,9 @@ The solution is obtained numerically using a 1st-order finite-difference method 
 
 ```math
 a^{l}(t+dt) = a^{l}(t) + dt \cdot \dot{a}^{l}(t)
+
 \dot{a}^{l}(t+dt) = \dot{a}^{l}(t) + dt \cdot F^{l}(a(t),\dot{a}(t))
+
 F^{l}(a(t),\dot{a}(t))=  -\sum_{i,j}\Gamma^{l}_{ij}(a(t)) \cdot \dot{a}^{i}(t)\dot{a}^{j}(t)
 ```
 
