@@ -12,11 +12,11 @@ Here we study *information geometry*, a framework for quantifying the geometry o
 We consider normalized probability density functions $f(x,a):R^D\times R^M\rightarrow R$ such that $\int_{X} f(x,a) dx = 1$, where
 
 ```math
-$x$ : D-dimensional random variable;
+x \text{ : D-dimensional random variable; }
 
-$a$ : M-dimensional distribution parameter;
+a \text{ : M-dimensional distribution parameter; }
 
-$X=R^{D \times N}$ : sample domain of observations of $x$, taken as $N\rightarrow \infty$. 
+X=R^{D \times N} \text{ : sample domain of observations of $x$, taken as $N\rightarrow \infty$. }
 ```
 
 The metric $g_{ij}(a)$ in this space is the Fisher information matrix. Its components are products of the partial derivatives of the probability distribution with respect to the parameter axes, evaluated at a particular point in parameter space. It is computed from the logarithm of the reciprocal probability (i.e. the information $I$): 
