@@ -206,9 +206,9 @@ def gradient_x(f,x,a,dx,f_shape=(1,),normalize=True):
 @njit
 def gradient_a(f,x,a,da,f_shape=(1,),normalize=True):
     """
-    2nd order finite difference estimation of D_dx[f(x,a)],
+    2nd order finite difference estimation of D_da[f(x,a)],
 
-    i.e. the gradient of f at (x,a) along the dx direction.
+    i.e. the gradient of f at (x,a) along the da direction.
 
     https://www.dam.brown.edu/people/alcyew/handouts/numdiff.pdf
 
@@ -218,13 +218,13 @@ def gradient_a(f,x,a,da,f_shape=(1,),normalize=True):
 
     a (np.ndarray): M-dim vector of parameters.
 
-    dx (np.ndarray) : N-dim vector of perturbations.
+    da (np.ndarray) : M-dim vector of perturbations.
 
     order (int = 0, 1, or 2) : computes order'th deriv. 
     
     f_shape (tuple) : shape of the output function.
 
-    Returns one of (f, df/dx, d2f/dx2). 
+    Returns one of (f, df/da, d2f/da2). 
 
     """
     finite_differences = np.array([0,1,-1])
@@ -290,9 +290,9 @@ def gradient_xy(f,x,a,dx1,dx2,f_shape=(1,),normalize=True):
 @njit
 def gradient_ab(f,x,a,da1,da2,f_shape=(1,),normalize=True):
     """
-    2nd order finite difference estimation of D_dx2(D_dx1[f(x,a)]),
+    2nd order finite difference estimation of D_da2(D_da1[f(x,a)]),
 
-    i.e. the cross-partial of f at (x,a) along the dx2dx1 direction.
+    i.e. the cross-partial of f at (x,a) along the da2da1 direction.
 
     https://math.stackexchange.com/questions/2931510/cross-derivatives-using-finite-differences
 
@@ -302,7 +302,7 @@ def gradient_ab(f,x,a,da1,da2,f_shape=(1,),normalize=True):
 
     a (np.ndarray): M-dim vector of parameters.
 
-    dx_ (np.ndarray) : N-dim vector of perturbations.
+    da_ (np.ndarray) : M-dim vector of perturbations.
     
     f_shape (tuple) : shape of the output function.
 
@@ -515,7 +515,7 @@ class StatisticalManifold:
         self.ha = self.hessian('a')
         self.x = np.squeeze(self.x)
         self.g,self.ginv,self.dg,self.gamma = self.christoffel(y=self.y,jacobian=self.ja,hessian=self.ha)
-
+    # Sugar parsing functions to make working with class convenient; geodesic calculation at end
     def unravel_args(self,x=None,a=None):
         if x is None:
             x = self.x
