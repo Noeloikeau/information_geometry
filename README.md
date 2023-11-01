@@ -11,11 +11,13 @@ Here we study *information geometry*, a framework for quantifying the geometry o
 
 We consider normalized probability density functions $f(x,a):R^D\times R^M\rightarrow R$ such that $\int_{X} f(x,a) dx = 1$, where
 
-> $x$ : D-dimensional random variable;
+```math
+$x$ : D-dimensional random variable;
 
-> $a$ : M-dimensional distribution parameter;
+$a$ : M-dimensional distribution parameter;
 
-> $X=R^{D \times N}$ : sample domain of observations of $x$, taken as $N\rightarrow \infty$. 
+$X=R^{D \times N}$ : sample domain of observations of $x$, taken as $N\rightarrow \infty$. 
+```
 
 The metric $g_{ij}(a)$ in this space is the Fisher information matrix. Its components are products of the partial derivatives of the probability distribution with respect to the parameter axes, evaluated at a particular point in parameter space. It is computed from the logarithm of the reciprocal probability (i.e. the information $I$): 
 
@@ -37,7 +39,10 @@ It can be showed that $\langle I_{i}I_{j} \rangle = \langle I_{ij} \rangle$, i.e
 The partial derivatives of the metric give the geodesic equations and define the curvature of the space. This curvature can be interpreted as the "latent" information stored in the derivatives of the distribution with respect to its parameter vectors. Geodesics minimize the distance between distributions and can be used to smoothly interpolate between points on a manifold. In other words, successive changes in a probability distribution along a geodesic are minimized.
 
 Analytically it can be shown that for the Fisher information metric the metric derivatives are:
-> $\partial_{k}g_{ij} = \langle -I_{i}I_{j}I_{k}+I_{i}I_{kj}+I_{j}I_{ki}\rangle$. 
+
+```math
+\partial_{k}g_{ij} = \langle -I_{i}I_{j}I_{k}+I_{i}I_{kj}+I_{j}I_{ki}\rangle. 
+```
 
 The connection coefficients relate the metric derivatives to the geodesic acceleration by means of a linear combination of functions. These Christoffel symbols are defined by:
 
