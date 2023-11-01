@@ -63,12 +63,11 @@ where $\dot{a}^{l}=\frac{da^{l}}{dt}$ is the derivative of the $l$'th component 
 
 The solution is obtained numerically using a 1st-order finite-difference method (Euler). The geodesic path is parametrized in terms of an affine, unit interval of $T$ points $t\in[0,1]$ such that $dt=\frac{1}{T}$. The resulting algorithm is:
 
-```math
-a^{l}(t+dt) = a^{l}(t) + dt \cdot \dot{a}^{l}(t)
+>  $a^{l}(t+dt) = a^{l}(t) + dt \cdot \dot{a}^{l}(t)$
 
-\dot{a}^{l}(t+dt) = \dot{a}^{l}(t) + dt \cdot F^{l}(a(t),\dot{a}(t))
+>  $\dot{a}^{l}(t+dt) = \dot{a}^{l}(t) + dt \cdot F^{l}(a(t),\dot{a}(t))$
 
-F^{l}(a(t),\dot{a}(t))=  -\sum_{i,j}\Gamma^{l}_{ij}(a(t)) \cdot \dot{a}^{i}(t)\dot{a}^{j}(t)
-```
+>  $F^{l}(a(t),\dot{a}(t))=  -\sum_{i,j}\Gamma^{l}_{ij}(a(t)) \cdot \dot{a}^{i}(t)\dot{a}^{j}(t)$
+> 
 
 All other derivatives are computed numerically using 2nd-order finite-differences (perturbations above and below the given vector). 
