@@ -19,14 +19,18 @@ We consider normalized probability density functions $f(x,a):R^D\times R^M\right
 
 The metric $g_{ij}(a)$ in this space is the Fisher information matrix. Its components are products of the partial derivatives of the probability distribution with respect to the parameter axes, evaluated at a particular point in parameter space. It is computed from the logarithm of the reciprocal probability (i.e. the information $I$): 
 
-> $I(x,a) = - \log[f(x,a)]$
+```math
+I(x,a) = - \log[f(x,a)]
+```
 
 The Fisher information quantifies the difference between infinitesimally distinct probability distributions. Each component gives the distance (in bits base $e$) between nearby points on a statistical manifold. It can be interpreted as the change in KL-divergence between two probability distributions as a result of infinitesimally varying parameters $a_{i}$ and $a_{j}$ about point $a$ and "integrating out" the sample space $X$:
 
-> $g_{ij}(a) =  \int_{X} [\partial_{a_{i}}I(x,a)][\partial_{a_{j}}I(x,a)] f(x,a) dx $
->            := $\langle I_{i}I_{j} \rangle$
+```math
+g_{ij}(a) =  \int_{X} [\partial_{a_{i}}I(x,a)][\partial_{a_{j}}I(x,a)] f(x,a) dx 
+:= \langle I_{i}I_{j} \rangle
+```
 
-where $\partial_{i}I:=I_{i}$ is an element of the Jacobian, and $\langle (.) \rangle = \int_{X}(.)f(x,a)dx$.
+where $\partial_{i}I:=I_{i}$ is an element of the Jacobian, and $\langle (.) \rangle := \int_{X}(.)f(x,a)dx$.
 
 It can be showed that $\langle I_{i}I_{j} \rangle = \langle I_{ij} \rangle$, i.e. that the expectation values of the Hessian $\partial_{i}\partial_{j}I:=I_{ij}$ and products of the Jacobian are equal under this metric. Therefore $g_{ij}(a)$ can be computed from either. Additionally $\langle I_{i} \rangle = 0$, which can be obtained by differentiating the normalization condition (see https://arxiv.org/pdf/1310.1831.pdf). These constraints are useful for evaluating the accuracy of numerical approaches to computing the metric, as is done here.
 
@@ -41,23 +45,26 @@ The connection coefficients relate the metric derivatives to the geodesic accele
 \Gamma^{l}_{ij} = \frac{1}{2} g^{lk} \langle \partial_{i} g_{kj} + \partial_{j} g_{ji} - \partial_{k} g_{ij} \rangle = g^{lk} \langle I_{ij} I _{k} - \frac{1}{2} I_{i} I_{j} I_{k} \rangle
 ```
 
->  $$\Gamma^{l}_{ij} = \frac{1}{2} g^{lk} \langle \partial_{i}g_{kj} + \partial_{j}g_{ki}-\partial_{k}g_{ij} \rangle = g^{lk} \langle I_{ij}I_{k}-\frac{1}{2}I_{i}I_{j}I_{k}\rangle $$
-
 where the second equality is the analytic solution obtained for the Fisher information metric specifically, and $g^{lk}$ is the inverse matrix of $g_{lk}$. Note the implicit summation over repeated indices.
 
 The geodesic equations are finally:
->   $\ddot{a}^{l} = -\Gamma^{l}_{ij}\dot{a}^{i}\dot{a}^{j}$
+
+```math
+\ddot{a}^{l} = -\Gamma^{l}_{ij}\dot{a}^{i}\dot{a}^{j}
+```
 
 where $\dot{a}^{l}=\frac{da^{l}}{dt}$ is the derivative of the $l$'th component of $a$ with respect to the affine parameter of the geodesic path $t$. These equations are an initial value problem specified by the initial point in parameter space $a_{0}$, the initial tangent vector $\dot{a}_{0}$, and the number of steps along the affine path of the geodesic $T$. Note the initial tangents are contravariant vectors that must be normalized by the metric at that point:
 
->   $|\dot{a}_0 |^{2}=g_{ii}(a_{0})\dot{a}_{0}^{i}\dot{a}_{0}^{i}$. 
+```math
+|\dot{a}_0 |^{2}=g_{ii}(a_{0})\dot{a}_{0}^{i}\dot{a}_{0}^{i}.
+``` 
 
 The solution is obtained numerically using a 1st-order finite-difference method (Euler). The geodesic path is parametrized in terms of an affine, unit interval of $T$ points $t\in[0,1]$ such that $dt=\frac{1}{T}$. The resulting algorithm is:
 
->   $a^{l}(t+dt) = a^{l}(t) + dt \cdot \dot{a}^{l}(t)$
-
->   $\dot{a}^{l}(t+dt) = \dot{a}^{l}(t) + dt \cdot F^{l}(a(t),\dot{a}(t))$
-
->   $F^{l}(a(t),\dot{a}(t))=  -\sum_{i,j}\Gamma^{l}_{ij}(a(t)) \cdot \dot{a}^{i}(t)\dot{a}^{j}(t)$.
+```math
+a^{l}(t+dt) = a^{l}(t) + dt \cdot \dot{a}^{l}(t)
+\dot{a}^{l}(t+dt) = \dot{a}^{l}(t) + dt \cdot F^{l}(a(t),\dot{a}(t))
+F^{l}(a(t),\dot{a}(t))=  -\sum_{i,j}\Gamma^{l}_{ij}(a(t)) \cdot \dot{a}^{i}(t)\dot{a}^{j}(t)
+```
 
 All other derivatives are computed numerically using 2nd-order finite-differences (perturbations above and below the given vector). 
