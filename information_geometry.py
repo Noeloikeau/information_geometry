@@ -37,7 +37,8 @@ unit_interval = np.array([0,1])
 unit_interval_noninclusive = np.array([nonzero,1-nonzero])
 perturbation = 1e-4
 
-#Define probability distributions
+#Define non-normalized and normalized probability distributions separately
+#and store their default domain and range as fallback attributes
 
 @njit
 def normal_distribution(x,a):
@@ -97,7 +98,8 @@ pareto_distribution.a_bounds = np.array([positives,positives])
 pareto_distribution.f_bounds = positives
 
 
-#Write bounding function
+#Write bounding function to deal with coordinate and numeric singularities
+#Only called by the StatisticalManifold class, which takes f -> _f = clip(f)
 @njit
 def clip(f,x,a,x_bounds,a_bounds,f_bounds,f_shape=(1,),replaces_inf=0):
     """
