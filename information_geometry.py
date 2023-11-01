@@ -98,8 +98,9 @@ pareto_distribution.a_bounds = np.array([positives,positives])
 pareto_distribution.f_bounds = positives
 
 
-#Write bounding function to deal with coordinate and numeric singularities
-#Only called by the StatisticalManifold class, which takes f -> _f = clip(f)
+#Write bounding function to deal with coordinate and numerical singularities
+#Only called by the submanifold function and StatisticalManifold class, 
+#which take f -> _f = clip(f)
 @njit
 def clip(f,x,a,x_bounds,a_bounds,f_bounds,f_shape=(1,),replaces_inf=0):
     """
