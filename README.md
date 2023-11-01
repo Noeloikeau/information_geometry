@@ -33,7 +33,7 @@ where $\partial_{i}I:=I_{i}$ is an element of the Jacobian, and $\langle (.) \ra
 
 It can be showed that $\langle I_{i}I_{j} \rangle = \langle I_{ij} \rangle$, i.e. that the expectation values of the Hessian $\partial_{i}\partial_{j}I:=I_{ij}$ and products of the Jacobian are equal under this metric. Therefore $g_{ij}(a)$ can be computed from either. Additionally $\langle I_{i} \rangle = 0$, which can be obtained by differentiating the normalization condition (see Sec. II of [this paper](https://arxiv.org/pdf/1310.1831.pdf)). These constraints are useful for evaluating the accuracy of numerical approaches to computing the metric, as is done here.
 
-The partial derivatives of the metric give the geodesic equations and define the curvature of the space. This curvature can be interpreted as the "latent" information stored in the derivatives of the distribution with respect to its parameter vectors. Geodesics minimize the distance between distributions and can be used to smoothly interpolate between points on a manifold. In other words, successive changes in a probability distribution along a geodesic are minimized.
+The partial derivatives of the metric give the geodesic equations and define the curvature of the space. This curvature can be interpreted as the "latent" information stored in the derivatives of the distribution with respect to its parameter vectors. Geodesics minimize the distance between distributions and can be used to smoothly interpolate between points on a manifold. In other words, successive changes in a probability distribution along a geodesic are extremized (typically, minimized).
 
 Analytically it can be shown that for the Fisher information metric the metric derivatives are:
 
