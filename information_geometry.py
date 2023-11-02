@@ -99,8 +99,7 @@ pareto_distribution.f_bounds = positives
 
 
 #Write bounding function to deal with coordinate and numerical singularities
-#Only called by the submanifold function and StatisticalManifold class, 
-#which take f -> _f = clip(f)
+#Only called by the StatisticalManifold class, which takes f -> clip(f)
 @njit
 def clip(f,x,a,x_bounds,a_bounds,f_bounds,f_shape=(1,),replaces_inf=0):
     """
@@ -262,7 +261,7 @@ def gradient_xy(f,x,a,dx1,dx2,f_shape=(1,),normalize=True):
 
     a (np.ndarray): M-dim vector of parameters.
 
-    dx_ (np.ndarray) : N-dim vector of perturbations.
+    dx_ (np.ndarray) : N-dim vectors of perturbations.
     
     f_shape (tuple) : shape of the output function.
 
@@ -305,7 +304,7 @@ def gradient_ab(f,x,a,da1,da2,f_shape=(1,),normalize=True):
 
     a (np.ndarray): M-dim vector of parameters.
 
-    da_ (np.ndarray) : M-dim vector of perturbations.
+    da_ (np.ndarray) : M-dim vectors of perturbations.
     
     f_shape (tuple) : shape of the output function.
 
@@ -333,15 +332,14 @@ def gradient_ab(f,x,a,da1,da2,f_shape=(1,),normalize=True):
 #Iterate over multiple parameter points and observation points
 
 @njit
-def submanifold(f,x,a,x_bounds,a_bounds,f_bounds,f_shape=(1,),replaces_inf=0,normalize=True):
+def submanifold(f,x,a,f_shape=(1,),normalize=True):
     x_pts, x_dim = x.shape
     a_pts, a_dim = a.shape
     F_shape = (x_pts,)+f_shape
     F = np.zeros((a_pts,)+F_shape)
     for apt in range(a_pts):
         for xpt in range(x_pts):
-            F[apt,xpt] = clip(f=f,x=x[xpt],a=a[apt],replaces_inf=replaces_inf,
-                x_bounds=x_bounds,a_bounds=a_bounds,f_bounds=f_bounds,f_shape=f_shape)
+            F[apt,xpt] = f(x=x[xpt],a=a[apt])
     if normalize:
         dX = (x.max()-x.min())/x.shape[0]
         for apt in range(a_pts):
@@ -405,6 +403,14 @@ def hessian_a(f,x,a,da,f_shape=(1,),normalize=True):
 #Compute differential geometry terms
 
 @njit
+def log_deriv(y,jacobian,hessian,bias=nonzero):
+    log_jac = -jacobian/(y+bias)
+    log_hess = -hessian/(y+bias)
+    for s in np.ndindex(log_hess.shape[:2]):
+        log_hess[s] += log_jac[s[0]]*log_jac[s[1]]
+    return log_jac,log_hess
+
+@njit
 def christoffel(x,y,jacobian,hessian,bias=nonzero):
     L,H=log_deriv(y=y,jacobian=jacobian,hessian=hessian,bias=bias)
     dx=(x.max()-x.min())/x.size
@@ -428,14 +434,6 @@ def christoffel_numeric(x,y,g,dg):
         for k in range(g.shape[0]):
             gamma[l,i,j] += 0.5*ginv[l,k]*(y*(dg[j,k,i]+dg[i,k,j]-dg[k,i,j])).sum(axis=-1)*dx
     return gamma
-
-@njit
-def log_deriv(y,jacobian,hessian,bias=nonzero):
-    log_jac = -jacobian/(y+bias)
-    log_hess = -hessian/(y+bias)
-    for s in np.ndindex(log_hess.shape[:2]):
-        log_hess[s] += log_jac[s[0]]*log_jac[s[1]]
-    return log_jac,log_hess
 
 @njit
 def geodesic(dx,gamma):
@@ -493,11 +491,13 @@ class StatisticalManifold:
             self.da_matrix[i,i] = self.da[i]
         
         #create jitted function respecting bounds
+        self.fname = str(f.__name__)
         x_bounds=self.x_bounds
         a_bounds=self.a_bounds
         f_bounds=self.f_bounds
         f_shape=self.f_shape
         replaces_inf=self.replaces_inf
+
         @njit
         def _f(x,a):
             return clip(f=f,
@@ -509,16 +509,24 @@ class StatisticalManifold:
                 replaces_inf=replaces_inf,
                 f_shape=f_shape)
 
-        #store result of computations on given inputs
-        self._f = _f
+        #store jitted function and "wake it up"
+        self.f = _f
+        try:
+            test = self.f(self.x[0],self.a[0])
+        except:
+            pass
+        #perform full computation
         self.y = self()
         self.jx = self.jacobian('x')
         self.ja = self.jacobian('a')
         self.hx = self.hessian('x')
         self.ha = self.hessian('a')
         self.x = np.squeeze(self.x)
-        self.g,self.ginv,self.dg,self.gamma = self.christoffel(y=self.y,jacobian=self.ja,hessian=self.ha)
-    # Sugar parsing functions to make working with class convenient; geodesic calculation at end
+        self.g,self.ginv,self.dg,self.gamma = self.christoffel(y=self.y,
+            jacobian=self.ja,hessian=self.ha)
+    
+    # Parsing functions to ensure consistent calls; 
+    # geodesic calculation at end of class
     def unravel_args(self,x=None,a=None):
         if x is None:
             x = self.x
@@ -532,14 +540,13 @@ class StatisticalManifold:
 
     def __call__(self,x=None,a=None):
         x,a=self.unravel_args(x=x,a=a)
-        res=submanifold(f=self.f,x=x,a=a,normalize=self.normalize,
-            x_bounds=self.x_bounds,a_bounds=self.a_bounds,f_bounds=self.f_bounds,f_shape=self.f_shape)
+        res=submanifold(f=self.f,x=x,a=a,f_shape=self.f_shape,normalize=self.normalize)
         res = np.squeeze(res)
         return res
         
     def grad_x(self,axis=0,x=None,a=None,bounds=None):
         x,a=self.unravel_args(x=x,a=a)
-        res=gradient_x(f=self._f,
+        res=gradient_x(f=self.f,
             x=x,
             a=a,
             dx=self.dx_matrix[axis],
@@ -553,7 +560,7 @@ class StatisticalManifold:
 
     def grad_a(self,axis=0,x=None,a=None,bounds=None):
         x,a=self.unravel_args(x=x,a=a)
-        res=gradient_a(f=self._f,
+        res=gradient_a(f=self.f,
             x=x,
             a=a,
             da=self.da_matrix[axis],
@@ -567,7 +574,7 @@ class StatisticalManifold:
 
     def grad_xy(self,axis=(0,0),x=None,a=None,bounds=None):
         x,a=self.unravel_args(x=x,a=a)
-        res=gradient_xy(f=self._f,
+        res=gradient_xy(f=self.f,
             x=x,
             a=a,
             dx1=self.dx_matrix[axis[0]],
@@ -582,7 +589,7 @@ class StatisticalManifold:
 
     def grad_ab(self,axis=(0,0),x=None,a=None,bounds=None):
         x,a=self.unravel_args(x=x,a=a)
-        res=gradient_ab(f=self._f,
+        res=gradient_ab(f=self.f,
             x=x,
             a=a,
             da1=self.da_matrix[axis[0]],
@@ -597,7 +604,7 @@ class StatisticalManifold:
     
     def jac_x(self,x=None,a=None,bounds=None):
         x,a=self.unravel_args(x=x,a=a)
-        res=jacobian_x(f=self._f,
+        res=jacobian_x(f=self.f,
             x=x,
             a=a,
             dx=self.dx_matrix,
@@ -611,7 +618,7 @@ class StatisticalManifold:
 
     def jac_a(self,x=None,a=None,bounds=None):
         x,a=self.unravel_args(x=x,a=a)
-        res=jacobian_a(f=self._f,
+        res=jacobian_a(f=self.f,
             x=x,
             a=a,
             da=self.da_matrix,
@@ -625,7 +632,7 @@ class StatisticalManifold:
 
     def hess_x(self,x=None,a=None,bounds=None):
         x,a=self.unravel_args(x=x,a=a)
-        res=hessian_x(f=self._f,
+        res=hessian_x(f=self.f,
             x=x,
             a=a,
             dx=self.dx_matrix,
@@ -639,7 +646,7 @@ class StatisticalManifold:
     
     def hess_a(self,x=None,a=None,bounds=None):
         x,a=self.unravel_args(x=x,a=a)
-        res=hessian_a(f=self._f,
+        res=hessian_a(f=self.f,
             x=x,
             a=a,
             da=self.da_matrix,
@@ -678,7 +685,9 @@ class StatisticalManifold:
         else:
             return self.hess_a(x=x,a=a,bounds=bounds)
 
-    def plot(self,a=None,x=None,y=None,ja=None,jx=None,ha=None,hx=None,xlim=None,ylim=None):
+    def plot(self,a=None,x=None,y=None,ja=None,jx=None,ha=None,hx=None,xlim=None,ylim=None,
+        log = False
+        ):
         if a is None:
             a=self.a[0]
         if x is None:
@@ -693,6 +702,26 @@ class StatisticalManifold:
             ha=self.ha
         if hx is None:
             hx=self.hx
+        title = self.fname+' and its derivatives'
+        if log: #log transform data
+            title = 'Log '+title
+            log_jac,log_hess=log_deriv(y=y,jacobian=ja,hessian=ha)
+            log_jx = -jx/y
+            log_hx = log_jx**2 - hx/y
+            log_y = -np.log(y)
+            #rename locals
+            y=log_y 
+            ja=log_jac
+            ha=log_hess
+            jx = log_hx
+            hx = log_hx
+            #store
+            self.log_y = y 
+            self.log_ja = ja
+            self.log_ha = ha
+            self.log_jx = jx
+            self.log_hx = hx
+            
         plt.plot(x,y,label=r'$f(x'+f',{a[0]},{a[1]}'+r')$')
         for j in range(ja.shape[0]):
             s=r'$\partial_{a_{'+f'{j}'+r'}}f$'
@@ -709,7 +738,7 @@ class StatisticalManifold:
                 ncol=3, fancybox=True, shadow=True)
         plt.xlabel('x')
         plt.ylabel('Probability density')
-        plt.title(str(self.f.__name__)+' and its derivatives',y=1.4)
+        plt.title(title, y=1.4)
         if xlim is not None:
             plt.xlim(*xlim)
         if ylim is not None:
