@@ -58,7 +58,7 @@ The geodesic equations are finally:
 where $\dot{a}^{l}=\frac{da^{l}}{dt}$ is the derivative of the $l$'th component of $a$ with respect to the affine parameter of the geodesic path $t$. These equations are an initial value problem specified by the initial point in parameter space $a_{0}$, the initial tangent vector $\dot{a}_{0}$, and the number of steps along the affine path of the geodesic $T$. Note the initial tangents are contravariant vectors that must be normalized by the metric at that point:
 
 ```math
-|\dot{a}_0 |^{2}=g_{ii}(a_{0})\dot{a}_{0}^{i}\dot{a}_{0}^{i}.
+|\dot{a}_0 |^{2}=g_{ij}(a_{0})\dot{a}_{0}^{i}\dot{a}_{0}^{j}.
 ``` 
 
 The solution is obtained numerically using a 1st-order finite-difference method (Euler). The geodesic path is parametrized in terms of an affine, unit interval of $T$ points $t\in[0,1]$ such that $dt=\frac{1}{T}$. The resulting algorithm is:
