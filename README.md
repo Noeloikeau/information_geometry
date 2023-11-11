@@ -3,7 +3,7 @@ This library implements *information geometry*, a framework for quantifying the 
 
 See `statistical_manifolds.ipynb` for examples and `information_geometry.py` for the primary code.
 
-![gif](https://github.com/Noeloikeau/information_geometry/blob/main/example.gif)
+![](https://github.com/Noeloikeau/information_geometry/blob/main/example.gif)
 
 For external references on this subject from different backgrounds, see [statistical manifold learning](https://proceedings.mlr.press/v32/suna14.pdf) (machine learning & neuroscience), [curved exponential families](https://bsi-ni.brain.riken.jp/database/file/85/076.pdf) (pure math), [emergent general relativity](https://arxiv.org/pdf/1310.1831.pdf) (theoretical physics), [sensor network localization](https://www.mdpi.com/1099-4300/19/7/308/htm) (engineering & optimization). 
 
