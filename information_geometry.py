@@ -1,17 +1,424 @@
 """
 author: Noeloikeau Charlot
-date: 10/29/2023
-version: 0.1
+date: 2/24/2025
+version: 2.0
 
 Implements methods used to calculate information geometry quantities.
 See LICENSE, README, and statistical_manifolds.ipynb for context.
+Full re-write using njit parallelization of tangent vectors.
 """
 
 import numpy as np
+from numba import njit, prange
+import matplotlib
 import matplotlib.pyplot as plt
-from numba import njit
+from matplotlib.animation import FuncAnimation,PillowWriter,FFMpegWriter
 from matplotlib.collections import LineCollection
 
+# Constants #
+delta = 1e-5
+x_pts = 1000
+nonzero = np.nextafter(0., 1.)
+nearinf = 1e100
+isnan = 0.
+isinf = nearinf
+
+# Intervals #
+reals = np.array([-np.inf,np.inf])
+unit_interval = np.array([0.,1.])
+open_interval = np.array([delta,1.-delta])
+five_sigma = np.array([-5.,5.])
+
+# Functions #
+@njit
+def normal_distribution(x,a):
+    """
+    Normalized Gaussian distribution over input array `x` 
+    with a[0] = mean  &  a[1] = standard deviation.
+    """
+    y = np.exp(-0.5*((x-a[0])/a[1])**2)/(a[1]*np.sqrt(2.*np.pi))
+    y = y / np.sum(y)
+    return y
+
+normal_distribution.x = np.linspace(*five_sigma,x_pts)
+normal_distribution.a = np.array([0.,1.])
+
+@njit
+def beta_distribution(x,a):
+    y = (x**(a[0]-1.))*(1.-x)**(a[1]-1.)
+    y = y / (np.sum(y)*(x.max()-x.min()/x.shape[0])) 
+    return y
+
+beta_distribution.x = np.linspace(*open_interval,x_pts)
+beta_distribution.a = np.array([2.,2.])
+
+@njit
+def clip(f,x,a,
+         f_bounds = reals,
+         x_bounds = reals,
+         a_bounds = reals,
+         normalize = False):
+    """
+    Restricts the domain and range of y = f(x,a).
+
+    f (CPUDispatcher): jitted function with signature f(x,a).
+    x (np.ndarray): matrix or vector of variables.
+    a (np.ndarray): matrix or vector of parameters.
+    f_/x_/a_bounds (np.ndarray) : 2-dim vector(s) of inclusive bounds.
+    
+    returns y/np.sum(y) if normalize is True; else y
+    """
+
+    for i in range(x.shape[0]):
+        if x[i] < x_bounds[0]:
+            x[i] = x_bounds[0]
+        elif x[i] > x_bounds[1]:
+            x[i] = x_bounds[1]
+    
+    for j in range(a.shape[0]):
+        if a[j] < a_bounds[0]:
+            a[j] = a_bounds[0]
+        elif a[j] > a_bounds[1]:
+            a[j] = a_bounds[1]
+
+    y = f(x,a)
+    
+    for s in range(y.shape[0]):
+        if y[s] < f_bounds[0]:
+            y[s] = f_bounds[0]
+        elif y[s] > f_bounds[1]:
+            y[s] = f_bounds[1]
+
+    if normalize:
+        y /= np.sum(y)
+
+    return y
+
+def clipped(f,
+            f_bounds = None,
+            x_bounds = None,
+            a_bounds = None,
+            normalize = False):
+            """
+            Partially evaluates `clip` over `f`
+            if any bounds are provided.
+            Returns a new callable `f_clipped`.
+            """
+            if (f_bounds is None) and (x_bounds is None) and (a_bounds is None) \
+                and (normalize is False):
+            
+                return f
+
+            else:
+                f_bounds = f_bounds if (f_bounds is not None) else reals
+                x_bounds = x_bounds if (x_bounds is not None) else reals
+                a_bounds = a_bounds if (a_bounds is not None) else reals
+
+                @njit
+                def f_clipped(x,a):
+                    return clip(f,x,a,
+                                f_bounds=f_bounds,x_bounds=x_bounds,a_bounds=a_bounds,
+                                normalize=normalize)
+                f_clipped.__name__ = f.__name__
+
+                return f_clipped
+
+@njit
+def gradient(f,x,a,h,f_shape=()):
+    """
+    Returns the function y = f(x,a) and its Jacobian and Hessian
+    with respect to the parameter `a`. Uses symmetric 2nd-order 
+    finite differences that call the function the minimum number 
+    of times required, equal to  1 + 4 * a_dim**2  calls, 
+    where a_dim is the size of `a`. 
+
+    Args:
+        f (CPUDispatcher): jitted function with signature f(x,a).
+        x (array): coordinate matrix of shape (x_pts, x_dim).
+        a (array): parameter vector of shape (a_dim,).
+        h (array): differential matrix of shape (a_dim, a_dim).
+        f_shape (tuple): output shape, if function is not scalar.
+
+    The parameter vector is perturbed differentially by the vectors of `h`,
+    and the calculation proceeds as differences of f(x,a+h[i]+h[j]) over (i,j).
+    Thus `h` acts as a differential operator specifying the coordinate system
+    in which the derivative is being calculated, indexed by the basis of `a`.
+    
+    Returns:
+        y (array): `f` evaluated over `x` at `a`. Shape is (x_pts)+f_shape.
+        jacobian (array): partial derivatives of `f` w.r.t `h` in `a`'s basis.
+                Shape is: (a_dim, x_pts)+f_shape. 
+        hessian (array): cross partials of `f` w.r.t `h` in `a`'s basis. 
+                Shape is: (a_dim, a_dim, x_pts)+f_shape. 
+    
+    Example use:
+        f = normal_distribution     #a[0]=mean, a[1]=std
+        x = np.linspace(-5,5,1000)
+        a = np.array([0.,1.])
+        h = np.array([[1e-5,0],[0,1e-5]])
+        y,J,H = gradient(f,x,a,h,f_shape=())
+
+    See also:
+    https://math.stackexchange.com/questions/2931510/cross-derivatives-using-finite-differences
+    https://www.dam.brown.edu/people/alcyew/handouts/numdiff.pdf
+    """
+    a_dim = a.shape[0]     # parameter vector
+    x_pts = x.shape[0]     # coordinate matrix
+    jacobian = np.zeros((a_dim,x_pts)+f_shape)
+    hessian = np.zeros((a_dim,a_dim,x_pts)+f_shape)
+    # first function evaluation [out of 1 + 4 * a_dim**2]
+    y = f(x=x,a=a)
+    # calculate (-2,-1,1,2) perturbations along each axis
+    # begin with jacobian and hessian diagonal 
+    for i in range(a_dim): 
+        da1 = h[i]                      # differential vector
+        d1 = np.sqrt(np.dot(da1,da1))   # differential norm
+        fp1 = f(x=x, a=a+da1)  
+        fm1 = f(x=x, a=a-da1)
+        jacobian[i] = (fp1-fm1)/(2.*d1)
+        fp2 = f(x=x, a=a+2.*da1)         
+        fm2 = f(x=x, a=a-2.*da1)
+        # equality of cross terms on the diagonal f(x,a+da-da) = f(x,a) 
+        # hence diagonal requires only 2nd differences       
+        hessian[i,i] = (fp2+fm2-2.*y)/(4.*(d1**2))
+        # hessian off-diagonal 
+        for j in range(a_dim):
+            if j!=i:
+                da2 = h[j]
+                d2 = np.sqrt(np.dot(da2,da2)) 
+                f00 = f(x=x, a=a-da1-da2)
+                f01 = f(x=x, a=a-da1+da2)
+                f10 = f(x=x, a=a+da1-da2)
+                f11 = f(x=x, a=a+da1+da2)
+                hessian[i,j] = (f00+f11-f01-f10)/(4.*d1*d2)
+    return y,jacobian,hessian
+
+@njit
+def grxdient(f,x,a,h,f_shape=()):
+    """
+    Identical to the `gradient` function except
+    `x` is replaced with `a` in the sense that
+    `h` differentiates with respect to the 
+    coordinate matrix `x` instead of the
+    parameter vector `a`.
+    Example use: # note x.shape = (1000,1)
+        f = normal_distribution     #a[0]=mean, a[1]=std
+        x = np.atleast_2d(np.linspace(-5,5,1000)).T
+        a = np.array([0.,1.])
+        h = np.array([[1e-5]])
+        y,J,H = grxdient(f,x,a,h,f_shape=(1,)) # note (1,) output shape
+    """
+    x_pts, x_dim = x.shape     
+    jxcobixn = np.zeros((x_dim,x_pts)+f_shape)
+    hessixn = np.zeros((x_dim,x_dim,x_pts)+f_shape)
+    y = f(x=x,a=a)
+    for i in range(x_dim): 
+        dx1 = h[i]
+        d1 = np.sqrt(np.dot(dx1,dx1)) 
+        fp1 = f(x=x+dx1,a=a)  
+        fm1 = f(x=x-dx1,a=a)
+        jxcobixn[i] = (fp1-fm1)/(2.*d1)
+        fp2 = f(x=x+2.*dx1,a=a)  
+        fm2 = f(x=x-2.*dx1,a=a)
+        hessixn[i,i] = (fp2+fm2-2.*y)/(4.*(d1**2))
+        for j in range(x_dim):
+            if j!=i:
+                dx2 = h[j]
+                d2 = np.sqrt(np.dot(dx2,dx2)) 
+                f00 = f(x=x-dx1-dx2,a=a)
+                f01 = f(x=x-dx1+dx2,a=a)
+                f10 = f(x=x+dx1-dx2,a=a)
+                f11 = f(x=x+dx1+dx2,a=a)
+                hessixn[i,j] = (f00+f11-f01-f10)/(4.*d1*d2)
+    return y,jxcobixn,hessixn
+
+@njit
+def log_deriv(y,jacobian,hessian,bias=nonzero):
+    """
+    Transforms the Jacobian and Hessian of a function y
+    into the corresponding derivatives of -log(y).
+    """
+    log_jac = -jacobian/(y+bias)
+    log_hess = -hessian/(y+bias)
+    for s in np.ndindex(log_hess.shape[:2]):
+        log_hess[s] += log_jac[s[0]]*log_jac[s[1]]
+    return log_jac,log_hess
+
+@njit
+def remove_singularities(g,isinf=isinf,isnan=isnan):
+    """
+    Return a copy of `g` where inf and NaN 
+    are replaced by `isinf` `isnan`.
+    """
+    z = np.zeros(g.shape,dtype=g.dtype)
+    for s in np.ndindex(z.shape):
+        if np.isinf(g[s]):
+            if g[s]>0:
+                z[s] = isinf
+            else:
+                z[s] = -isinf
+        elif np.isnan(g[s]):
+            z[s] = isnan
+        else:
+            z[s] = g[s]
+    return z
+
+@njit
+def inverse_matrix(g,isinf=isinf,isnan=isnan):
+    """
+    Calculate the inverse matrix of `g`
+    even if it is singular.
+    """
+    try: # get inverse matrix
+        ginv = np.linalg.inv(g)
+    except: # try pseudoinverse
+        try: 
+            ginv = np.linalg.pinv(g)
+        except: #singular to machine precision; remove singularities
+            ginv = np.linalg.pinv(remove_singularities(g,isinf=isinf,isnan=isnan))
+    return ginv
+
+@njit
+def alpha_connection(y,jacobian,hessian,alpha=0.,bias=nonzero,isinf=isinf,isnan=isnan):
+    """
+    Calculate the Fisher information metric and 
+    its derivatives, inverse, and affine connection
+    given by the Christoffel symbols of the 2nd kind with 
+    a control parameter `alpha` tuning the first-order derivatives.
+    """
+    #log jacobian and hessian
+    L,H = log_deriv(y=y,jacobian=jacobian,hessian=hessian,bias=bias)
+    # fisher information matrix analytic results
+    g = (H*y).sum(axis=-1)
+    dg = np.zeros(g.shape+(g.shape[0],))
+    for (i,j,k) in np.ndindex(dg.shape):
+        dg[k,i,j] = (y*(-L[i]*L[j]*L[k]+L[i]*H[k,j]+L[j]*H[k,i])).sum(axis=-1)
+    # inverse metric
+    ginv = inverse_matrix(g,isinf=isinf,isnan=isnan)
+    # connection / christoffel symbols
+    gamma = np.zeros(dg.shape)
+    for (l,i,j) in np.ndindex(dg.shape):
+        for k in range(g.shape[0]):
+            gamma[l,i,j] += ginv[l,k]*(
+                y*(-0.5*(1.+alpha)*L[i]*L[j]*L[k]+H[i,j]*L[k])
+                ).sum(axis=-1)
+    # note quantities have not been normalized by dx in sums over axis=-1
+    # this is optionally done in the `StatisticalManifold` class by selecting PDF=True
+    return g,dg,ginv,gamma
+
+@njit
+def inner_product(g,u,v):
+    """
+    Inner product of vectors `u` and `v`
+    given the metric matrix `g`.
+    """
+    S = (u.size,v.size)
+    dots = np.zeros(S,dtype=np.float_)
+    for (i,j) in np.ndindex(S):
+        dots[i,j] = g[i,j]*u[i]*v[j]
+    return dots.sum()
+
+@njit
+def geodesic_equation(gamma,dx):
+    """
+    Differentiates the tangent vector `dx`
+    given the metric connection /
+    Christoffel symbols of the 2nd kind `gamma`.
+    """
+    d2x = np.zeros(dx.shape)
+    for k in range(dx.shape[0]):
+        for i,j in np.ndindex((dx.size,dx.size)):
+            d2x[k] -= gamma[k,i,j]*dx[i]*dx[j]
+    return d2x
+
+@njit(parallel=True)
+def tangent_space(f,x,a,h,tangents,
+                  T = 1, f_shape = (),
+                  function_and_derivatives = gradient,
+                  metric_and_connection = alpha_connection
+                  ):
+    """
+    Computes the first `T` points of the geodesic equations
+    for the function `f` at point `a` on the manifold, given 
+    matrices of initial unit vectors `tangents` and 
+    coordinate differentials `h`. Returns all results of 
+    `function_and_derivatives` & `metric_and_connection` 
+    as well as new arrays `position` and `velocity`
+    containing solutions to geodesic paths in the basis of `a`.   
+
+    Args:
+        f (CPUDispatcher): jitted function with signature f(x,a) = y.
+        x (array): coordinate matrix of shape (x_pts, x_dim).
+        a (array): parameter vector of shape (a_dim,).
+        h (array): differential matrix of shape (a_dim, a_dim).
+        tangents (array): matrix of unit tangent vectors with shape (N,a_dim).
+        f_shape (tuple): output shape, if function is not scalar.
+        T (int): number of geodesic steps to take; defaults to none.
+        function_and_derivatives (CPUDispatcher):   signature (f,x,a,h,f_shape) 
+                                                    returns (y,jacobian,hessian).
+        metric_and_connection (CPUDispatcher):      signature (y,jacobian,hessian)
+                                                    returns (metric,dmetric,invmetric,connection).
+    
+    Returns tuple of arrays of shape (...,x_pts)+f_shape:
+        (y,jacobian,hessian,metric,dmetric,invmetric,connection,position,velocity)
+    
+    Example use:
+        f = normal_distribution     #a[0]=mean, a[1]=std
+        x = np.linspace(-5,5,10000)
+        a = np.array([0.,1.])
+        h = np.array([[1e-4,0],[0,1e-4]])
+        N, T = 16, 100
+        # disk of N input tangent vectors, unnormalized
+        tangents = np.array([[np.cos(2*np.pi*i/N),np.sin(2*np.pi*i/N)] for i in range(N)])
+        y,J,H,g,dg,ginv,gamma,position,v = tangent_space(f=f,x=x,a=a,h=h,tangents=tangents,T=T)
+        for i in range(position.shape[0]):                  #initial tangents
+            plt.scatter(position[i,:,0],position[i,:,1])    #geodesic paths
+    """
+    x_pts = x.shape[0]  # evaluated function points (not on manifold)
+    N,a_dim = tangents.shape  # number of manifold tangent vectors & their dimension
+    dt = float(1./T)    # geodesic affine parameter step size
+    # function and its derivatives
+    function = np.zeros((N,T,x_pts))        
+    jacobian = np.zeros((N,T,a_dim,x_pts))        
+    hessian = np.zeros((N,T,a_dim,a_dim,x_pts)) 
+    # inner product and christoffel symbols
+    metric = np.zeros((N,T,a_dim,a_dim))
+    invmetric = np.zeros((N,T,a_dim,a_dim))
+    dmetric = np.zeros((N,T,a_dim,a_dim,a_dim))
+    connection = np.zeros((N,T,a_dim,a_dim,a_dim))
+    # manifold coordinates of geodesics
+    position = np.zeros((N,T,a_dim))
+    velocity = np.zeros((N,T,a_dim))
+    # initialize metric information at point a
+    y,J,H = function_and_derivatives(f,x,a,h,f_shape)
+    g,dg,ginv,gamma = metric_and_connection(y,J,H)
+    for i in range(N):
+        function[i,0] = y
+        jacobian[i,0] = J
+        hessian[i,0] = H
+        metric[i,0] = g
+        dmetric[i,0] = dg
+        invmetric[i,0] = ginv
+        connection[i,0] = gamma
+    # loop over tangent vectors radiating from point a
+    for i in prange(N): # `prange` parallelizes loop
+        position[i,0] = a
+        # normalize tangent vector by inner product on curved space
+        velocity[i,0] = tangents[i] / np.sqrt(inner_product(metric[i,0],tangents[i],tangents[i]))
+        # propagate using Euler method
+        for t in prange(1,T):
+            position[i,t] = position[i,t-1] + velocity[i,t-1]*dt
+            # recompute metric information
+            function[i,t],jacobian[i,t],hessian[i,t] = function_and_derivatives(f,x,position[i,t-1],h,f_shape)
+            metric[i,t],dmetric[i,t],invmetric[i,t],connection[i,t] = metric_and_connection(
+                function[i,t],jacobian[i,t],hessian[i,t])
+            # solve dynamical equations
+            acceleration = geodesic_equation(connection[i,t],velocity[i,t-1]) 
+            velocity[i,t] = velocity[i,t-1] + acceleration*dt
+
+    return function,jacobian,hessian,metric,dmetric,invmetric,connection,position,velocity
+
+# Plotting helpers
 def force_aspect(ax,aspect=1):
     '''
     Helper function to force the aspect of the matplotlib 'ax' axes object.
@@ -24,704 +431,105 @@ def force_aspect(ax,aspect=1):
         extent = [x[0],x[1],y[0],y[1]]
     ax.set_aspect(abs((extent[1]-extent[0])/(extent[3]-extent[2]))/aspect)
 
-#Define various bounds
-
-inf = np.inf
-nonzero = np.nextafter(0., 1.)
-real_line = np.array([-inf,inf])
-geq_zero = np.array([0,inf])
-leq_zero = np.array([-inf,0])
-positives = np.array([nonzero,inf])
-negatives = -np.flip(positives)
-unit_interval = np.array([0,1])
-unit_interval_noninclusive = np.array([nonzero,1-nonzero])
-perturbation = 1e-4
-
-#Define non-normalized and normalized probability distributions separately
-#and store their default domain and range as fallback attributes
-
-@njit
-def normal_distribution(x,a):
+def color_line(x,y,colors,ax,lw=1):
     """
-    a[0] = mean
-    a[1] = s.d.
+    Breaks curve into segments and colors each segment.
     """
-    return np.exp(-0.5*((x-a[0])/a[1])**2)
-
-normal_distribution.f_shape = (1,)
-normal_distribution.x = np.linspace(-5,5,10000)
-normal_distribution.a = np.array([0,1])
-normal_distribution.x_bounds = real_line
-normal_distribution.a_bounds = np.array([real_line,positives])
-normal_distribution.f_bounds = geq_zero
-
-
-@njit
-def normalized_distribution(x,a):
-    """
-    a[0] = mean
-    a[1] = s.d.
-    """
-    return np.exp(-0.5*((x-a[0])/a[1])**2)/(a[1]*np.sqrt(2.0*np.pi))
-
-normalized_distribution.f_shape = (1,)
-normalized_distribution.x = np.linspace(-5,5,10000)
-normalized_distribution.a = np.array([0,1])
-normalized_distribution.x_bounds = real_line
-normalized_distribution.a_bounds = np.array([real_line,positives])
-normalized_distribution.f_bounds = geq_zero
-
-
-@njit
-def beta_distribution(x,a):
-    return (x**(a[0]-1.))*(1.-x)**(a[1]-1.)
-
-beta_distribution.f_shape = (1,)
-beta_distribution.a = np.array([0.5,0.5])
-beta_distribution.x = np.linspace(5*perturbation,1-5*perturbation,10000)
-beta_distribution.x_bounds = unit_interval
-beta_distribution.a_bounds = np.array([positives,positives])
-beta_distribution.f_bounds = geq_zero
-
-
-@njit
-def pareto_distribution(x,a):
-     sigma,zeta=a[0],a[1]
-     sigmainv=1.0/sigma
-     return np.exp(x)*sigmainv*(1.0+zeta*np.exp(x)*sigmainv)**(-1.0/zeta-1.0)
-    
-pareto_distribution.f_shape = (1,)
-pareto_distribution.a = np.array([1.0,5.0]) #default point
-pareto_distribution.x = np.linspace(-10,25,10000) #default x axis
-pareto_distribution.x_bounds = real_line
-pareto_distribution.a_bounds = np.array([positives,positives])
-pareto_distribution.f_bounds = positives
-
-
-#Write bounding function to deal with coordinate and numerical singularities
-#Only called by the StatisticalManifold class, which takes f -> clip(f)
-@njit
-def clip(f,x,a,x_bounds,a_bounds,f_bounds,f_shape=(1,),replaces_inf=0):
-    """
-    Restricts the domain and range of f(x,a).
-    
-    f (CPUDispatcher): jitted function with signature f(x,a).
-
-    x (np.ndarray): N-dim vector of variables.
-
-    a (np.ndarray): M-dim vector of parameters.
-
-    x_bounds (np.ndarray) : 2-dim vector of inclusive bounds.
-
-    a_bounds (np.ndarray) : (M*2)-dim vector of inclusive bounds.
-
-    f_shape (tuple) : shape of the output function.
-
-    Returns array of f_shape containing clipped function value. 
-    """
-    #store function evals
-    F = np.zeros((a.size,)+f_shape)
-
-    #store new variables and parameters
-    new_x = np.zeros(x.shape).astype(x.dtype)
-    new_a = np.zeros(a.shape).astype(a.dtype)
-
-    #clip parameters
-    for i in range(a.size):
-        if a[i] < a_bounds[i,0]:
-            try:
-                new_a[i] = a_bounds[i,0]
-            except:
-                print(a,a_bounds)
-        elif a[i] > a_bounds[i,1]:
-            new_a[i] = a_bounds[i,1]
-        else:
-            new_a[i] = a[i]
-
-    #clip variables
-    for i in range(x.size):
-        if x[i] < x_bounds[0]:
-            new_x[i] = x_bounds[0]
-        elif x[i] > x_bounds[1]:
-            new_x[i] = x_bounds[1]
-        else:
-            new_x[i] = x[i]
-    
-    #evaluate & clip function
-    F = f(x=new_x,a=new_a)
-    for s in np.ndindex(F.shape):
-        if F[s] == np.inf or F[s] == -np.inf:
-            F[s] = replaces_inf
-        elif F[s] < f_bounds[0]:
-            F[s] = f_bounds[0]
-        elif F[s] > f_bounds[1]:
-            F[s] = f_bounds[1]
-        else:
-            pass
-    
-    return F
-
-#Compute derivatives
-
-@njit
-def gradient_x(f,x,a,dx,f_shape=(1,),normalize=True):
-    """
-    2-nd order finite difference estimation of D_dx[f(x,a)],
-
-    i.e. the gradient of f at (x,a) along the dx direction.
-
-    https://www.dam.brown.edu/people/alcyew/handouts/numdiff.pdf
-
-    f (CPUDispatcher): jitted function with signature f(x,a).
-
-    x (np.ndarray): NxT matrix of vector variables.
-
-    a (np.ndarray): M-dim vector of parameters.
-
-    dx (np.ndarray) : N-dim vector of perturbations.
-
-    order (int = 0, 1, or 2) : computes order'th deriv. 
-    
-    f_shape (tuple) : shape of the output function.
-
-    Returns one of (f, df/dx, d2f/dx2). 
-
-    """
-    finite_differences = np.array([0,1,-1])
-    F = np.zeros((finite_differences.size,x.shape[0],)+f_shape)
-
-    d = np.sqrt(np.square(dx).sum())
-    for h in finite_differences:
-        for xp in range(x.shape[0]):
-            new_x = x[xp] + dx * h
-            F[h,xp] = f(x=new_x,a=a)
-    if normalize:
-        dX = (x.max()-x.min())/x.shape[0]
-        F=F/(dX*F[0].sum())
-
-    f1 = (F[1]-F[-1])/(2.0*d)
-    G = np.zeros((2,x.shape[0],)+f_shape)
-    G[0] = F[0]
-    G[1] = f1
-    return G
-
-@njit
-def gradient_a(f,x,a,da,f_shape=(1,),normalize=True):
-    """
-    2nd order finite difference estimation of D_da[f(x,a)],
-
-    i.e. the gradient of f at (x,a) along the da direction.
-
-    https://www.dam.brown.edu/people/alcyew/handouts/numdiff.pdf
-
-    f (CPUDispatcher): jitted function with signature f(x,a).
-
-    x (np.ndarray): N-dim matrix of vector variables.
-
-    a (np.ndarray): M-dim vector of parameters.
-
-    da (np.ndarray) : M-dim vector of perturbations.
-
-    order (int = 0, 1, or 2) : computes order'th deriv. 
-    
-    f_shape (tuple) : shape of the output function.
-
-    Returns one of (f, df/da, d2f/da2). 
-
-    """
-    finite_differences = np.array([0,1,-1])
-    F = np.zeros((finite_differences.size,x.shape[0],)+f_shape)
-    d = np.sqrt(np.square(da).sum())
-    for h in finite_differences:
-        new_a = a + da * h
-        for xp in range(x.shape[0]):
-            F[h,xp] = f(x=x[xp],a=new_a)
-    if normalize:
-        dX = (x.max()-x.min())/x.shape[0]
-        for h in finite_differences:
-            F[h] = F[h]/(dX*F[h].sum())
-    f1 = (F[1]-F[-1])/(2.0*d)
-    G = np.empty((2,x.shape[0],)+f_shape)
-    G[0] = F[0]
-    G[1] = f1
-    return G
-
-@njit
-def gradient_xy(f,x,a,dx1,dx2,f_shape=(1,),normalize=True):
-    """
-    2nd order finite difference estimation of D_dx2(D_dx1[f(x,a)]),
-
-    i.e. the cross-partial of f at (x,a) along the dx2dx1 direction.
-
-    https://math.stackexchange.com/questions/2931510/cross-derivatives-using-finite-differences
-
-    f (CPUDispatcher): jitted function with signature f(x,a).
-
-    x (np.ndarray): N-dim vector of variables.
-
-    a (np.ndarray): M-dim vector of parameters.
-
-    dx_ (np.ndarray) : N-dim vectors of perturbations.
-    
-    f_shape (tuple) : shape of the output function.
-
-    Returns array of f_shape containing cross partial. 
-
-    """
-    F = np.zeros((5,x.shape[0],)+f_shape)
-    d = 4.0*np.sqrt(np.square(dx1).sum())*np.sqrt(np.square(dx2).sum())
-        
-    for xpt in range(x.shape[0]):
-        F[4,xpt] = f(x=x[xpt],a=a)
-        F[0,xpt] = f(x=x[xpt]-dx1-dx2,a=a)
-        F[1,xpt] = f(x=x[xpt]-dx1+dx2,a=a)
-        F[2,xpt] = f(x=x[xpt]+dx1-dx2,a=a)
-        F[3,xpt] = f(x=x[xpt]+dx1+dx2,a=a)
-    
-    if normalize: #normalization integral
-        dX = (x.max()-x.min())/x.shape[0]
-        #for i in range(4):
-            #F[i]=F[i]/(dX*F[i].sum())
-        F=F/(dX*F[4].sum())
-    
-    d2f = (F[0]+F[3]-F[1]-F[2])/d
-        
-    return d2f
-
-
-@njit
-def gradient_ab(f,x,a,da1,da2,f_shape=(1,),normalize=True):
-    """
-    2nd order finite difference estimation of D_da2(D_da1[f(x,a)]),
-
-    i.e. the cross-partial of f at (x,a) along the da2da1 direction.
-
-    https://math.stackexchange.com/questions/2931510/cross-derivatives-using-finite-differences
-
-    f (CPUDispatcher): jitted function with signature f(x,a).
-
-    x (np.ndarray): N-dim vector of variables.
-
-    a (np.ndarray): M-dim vector of parameters.
-
-    da_ (np.ndarray) : M-dim vectors of perturbations.
-    
-    f_shape (tuple) : shape of the output function.
-
-    Returns array of f_shape containing cross partial. 
-
-    """
-    F = np.zeros((4,x.shape[0],)+f_shape)
-    d = 4.0*np.sqrt(np.square(da1).sum())*np.sqrt(np.square(da2).sum())
-        
-    for xpt in range(x.shape[0]):
-        F[0,xpt] = f(x=x[xpt],a=a-da1-da2)
-        F[1,xpt] = f(x=x[xpt],a=a-da1+da2)
-        F[2,xpt] = f(x=x[xpt],a=a+da1-da2)
-        F[3,xpt] = f(x=x[xpt],a=a+da1+da2)
-    
-    if normalize: #normalization integral
-        dX = (x.max()-x.min())/x.shape[0]
-        for i in range(4):
-            F[i]=F[i]/(dX*F[i].sum())
-    
-    d2f = (F[0]+F[3]-F[1]-F[2])/d
-        
-    return d2f     
-
-#Iterate over multiple parameter points and observation points
-
-@njit
-def submanifold(f,x,a,f_shape=(1,),normalize=True):
-    x_pts, x_dim = x.shape
-    a_pts, a_dim = a.shape
-    F_shape = (x_pts,)+f_shape
-    F = np.zeros((a_pts,)+F_shape)
-    for apt in range(a_pts):
-        for xpt in range(x_pts):
-            F[apt,xpt] = f(x=x[xpt],a=a[apt])
-    if normalize:
-        dX = (x.max()-x.min())/x.shape[0]
-        for apt in range(a_pts):
-            F[apt] = F[apt]/(dX*F[apt].sum())
-    return F
-
-@njit
-def jacobian_x(f,x,a,dx,f_shape=(1,),normalize=True):
-    x_pts, x_dim = x.shape
-    a_pts, a_dim = a.shape
-    F_shape = (x_pts,)+f_shape
-    G = np.zeros((a_pts,x_dim,)+F_shape)
-    for apt in range(a_pts):
-        for xdir in range(x_dim):
-            g = gradient_x(f=f,x=x,a=a[apt],dx=dx[xdir],f_shape=f_shape,normalize=normalize)
-            G[apt,xdir] = g[1]
-    return G
-
-@njit
-def jacobian_a(f,x,a,da,f_shape=(1,),normalize=True):
-    x_pts, x_dim = x.shape
-    a_pts, a_dim = a.shape
-    F_shape = (x_pts,)+f_shape
-    G = np.zeros((a_pts,a_dim,)+F_shape)
-    for apt in range(a_pts):
-        for adir in range(a_dim):
-            g = gradient_a(f=f,x=x,a=a[apt],da=da[adir],f_shape=f_shape,normalize=normalize)
-            G[apt,adir] = g[1]
-    return G
-
-@njit
-def hessian_x(f,x,a,dx,f_shape=(1,),normalize=True):
-    x_pts, x_dim = x.shape
-    a_pts, a_dim = a.shape
-    F_shape = (x_pts,)+f_shape
-    H = np.zeros((a_pts,x_dim,x_dim,)+F_shape)
-    for apt in range(a_pts):
-        hx = np.zeros((x_dim,x_dim,)+F_shape)
-        for xdir in range(x_dim):
-            for ydir in range(x_dim):
-                hx[xdir,ydir] = gradient_xy(f=f,x=x,
-                    a=a[apt],dx1=dx[xdir],dx2=dx[ydir],f_shape=f_shape,normalize=normalize)
-        H[apt] = hx
-    return H
-
-@njit
-def hessian_a(f,x,a,da,f_shape=(1,),normalize=True):
-    x_pts, x_dim = x.shape
-    a_pts, a_dim = a.shape
-    F_shape = (x_pts,)+f_shape
-    H = np.zeros((a_pts,a_dim,a_dim,)+F_shape)
-    for apt in range(a_pts):
-        ha = np.zeros((a_dim,a_dim,)+F_shape)
-        for adir in range(a_dim):
-            for bdir in range(a_dim):
-                ha[adir,bdir] = gradient_ab(f=f,x=x,
-                    a=a[apt],da1=da[adir],da2=da[bdir],f_shape=f_shape,normalize=normalize)
-        H[apt] = ha
-    return H
-
-#Compute differential geometry terms
-
-@njit
-def log_deriv(y,jacobian,hessian,bias=nonzero):
-    log_jac = -jacobian/(y+bias)
-    log_hess = -hessian/(y+bias)
-    for s in np.ndindex(log_hess.shape[:2]):
-        log_hess[s] += log_jac[s[0]]*log_jac[s[1]]
-    return log_jac,log_hess
-
-@njit
-def christoffel(x,y,jacobian,hessian,bias=nonzero):
-    L,H=log_deriv(y=y,jacobian=jacobian,hessian=hessian,bias=bias)
-    dx=(x.max()-x.min())/x.size
-    g=(H*y).sum(axis=-1)*dx
-    dg=np.zeros(g.shape+(g.shape[0],))
-    for (i,j,k) in np.ndindex(dg.shape):
-        dg[k,i,j] = (y*(-L[i]*L[j]*L[k]+L[i]*H[k,j]+L[j]*H[k,i])).sum(axis=-1)*dx
-    ginv = np.linalg.inv(g)
-    gamma = np.zeros(dg.shape)
-    for (l,i,j) in np.ndindex(dg.shape):
-        for k in range(g.shape[0]):
-            gamma[l,i,j] += ginv[l,k]*(y*(-0.5*L[i]*L[j]*L[k]+H[i,j]*L[k])).sum(axis=-1)*dx
-    return g,ginv,dg,gamma
-
-@njit
-def christoffel_numeric(x,y,g,dg):
-    dx=(x.max()-x.min())/x.size
-    ginv=np.linalg.inv(g)
-    gamma = np.zeros(dg.shape)
-    for (l,i,j) in np.ndindex(dg.shape):
-        for k in range(g.shape[0]):
-            gamma[l,i,j] += 0.5*ginv[l,k]*(y*(dg[j,k,i]+dg[i,k,j]-dg[k,i,j])).sum(axis=-1)*dx
-    return gamma
-
-@njit
-def geodesic(dx,gamma):
-    d2x=np.zeros(dx.shape)
-    for k in range(dx.shape[0]):
-        for i,j in np.ndindex((dx.size,dx.size)):
-            d2x[k] -= gamma[k,i,j]*dx[i]*dx[j]
-    return d2x
-    
-#Package into class
-
+    points = np.array([x, y]).T.reshape(-1, 1, 2)
+    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+    lc = LineCollection(segments, colors=colors)
+    lc.set_linewidth(lw)
+    line = ax.add_collection(lc)
+    return line
+
+# Classes #
 class StatisticalManifold:
-    def __init__(self,
-        f,
-        x = None,
-        a = None,
-        x_bounds = None,
-        a_bounds = None,
-        f_bounds = None,
-        f_shape = None,
-        dx = perturbation,
-        da = perturbation,
-        normalize = True,
-        replaces_inf = 0
-        ):
-
-        #parse and store keywords
-        self.__dict__.update({k:v for k,v in locals().items() if k!='self'})
-
-        #if the input function has any attributes, take them
-        for k,v in list(self.__dict__.items()):
-            if v is None:
-                assert hasattr(f,k), f"Require f.{k}!=None if {k}==None"
-                self.__dict__[k] = getattr(f,k)      
-          
-        #mandate lists of vectors
-        while len(self.x.shape)<2:
-            self.x=np.expand_dims(self.x,axis=-1)
-        while len(self.a.shape)<2:
-            self.a=np.expand_dims(self.a,axis=0)
-
-        self.x_pts, self.x_dim = self.x.shape
-        self.a_pts, self.a_dim = self.a.shape
-
-        #set perturbations
-        self.da=np.array(self.da)
-        while len(self.da.shape)<1:
-            self.da=np.expand_dims(self.da,-1)
-        while self.da.size<self.a_dim:
-            self.da=np.append(da,perturbation)
-
-        self.dx_matrix = np.eye(self.x_dim)*self.dx
-        self.da_matrix = np.zeros((self.a_dim,self.a_dim))
-        for i in range(self.a_dim):
-            self.da_matrix[i,i] = self.da[i]
+    """
+    Wrapper for the `tangent_space` function.
+    Saves the function outputs as attributes.
+    """
+    blacklist = ['self']
+    a_gradients = [gradient]
+    x_gradients = [grxdient]
+    def __init__(self,f,x,a,
+                 h=delta,tangents=1,T=1,f_shape = (),
+                 function_and_derivatives = gradient,
+                 metric_and_connection = alpha_connection,
+                 squeeze = False,
+                 density = True,
+                 f_bounds = None,
+                 x_bounds = None,
+                 a_bounds = None,
+                 normalize = False
+                 ):
         
-        #create jitted function respecting bounds
-        self.fname = str(f.__name__)
-        x_bounds=self.x_bounds
-        a_bounds=self.a_bounds
-        f_bounds=self.f_bounds
-        f_shape=self.f_shape
-        replaces_inf=self.replaces_inf
-
-        @njit
-        def _f(x,a):
-            return clip(f=f,
-                x=x,
-                a=a,
-                x_bounds=x_bounds,
-                a_bounds=a_bounds,
-                f_bounds=f_bounds,
-                replaces_inf=replaces_inf,
-                f_shape=f_shape)
-
-        #store jitted function and "wake it up"
-        self.f = _f
-        try:
-            test = self.f(self.x[0],self.a[0])
-        except:
-            pass
-        #perform full computation
-        self.y = self()
-        self.jx = self.jacobian('x')
-        self.ja = self.jacobian('a')
-        self.hx = self.hessian('x')
-        self.ha = self.hessian('a')
-        self.x = np.squeeze(self.x)
-        self.g,self.ginv,self.dg,self.gamma = self.christoffel(y=self.y,
-            jacobian=self.ja,hessian=self.ha)
+        self.__dict__.update({k:v for k,v in locals().items() if k not in StatisticalManifold.blacklist})
+        self.f = clipped(f,f_bounds,x_bounds,a_bounds,normalize)
+        self.get_dim()
+        self.get_h()
+        self.get_tangents()
+        self.dx = (self.x.max()-self.x.min())/self.x.shape[0]
+        self.__call__()
     
-    # Parsing functions to ensure consistent calls; 
-    # geodesic calculation at end of class
-    def unravel_args(self,x=None,a=None):
-        if x is None:
-            x = self.x
-        if a is None:
-            a = self.a
-        while len(x.shape)<2:
-            x=np.expand_dims(x,axis=-1)
-        while len(a.shape)<2:
-            a=np.expand_dims(a,axis=0)
-        return x,a
-
-    def __call__(self,x=None,a=None):
-        x,a=self.unravel_args(x=x,a=a)
-        res=submanifold(f=self.f,x=x,a=a,f_shape=self.f_shape,normalize=self.normalize)
-        res = np.squeeze(res)
-        return res
-        
-    def grad_x(self,axis=0,x=None,a=None,bounds=None):
-        x,a=self.unravel_args(x=x,a=a)
-        res=gradient_x(f=self.f,
-            x=x,
-            a=a,
-            dx=self.dx_matrix[axis],
-            f_shape=self.f_shape,
-            normalize=self.normalize)
-        res = np.squeeze(res)
-        if bounds is None:
-            return res
-        else:
-            return np.clip(res,*bounds)
-
-    def grad_a(self,axis=0,x=None,a=None,bounds=None):
-        x,a=self.unravel_args(x=x,a=a)
-        res=gradient_a(f=self.f,
-            x=x,
-            a=a,
-            da=self.da_matrix[axis],
-            f_shape=self.f_shape,
-            normalize=self.normalize)
-        res=np.squeeze(res)
-        if bounds is None:
-            return res
-        else:
-            return np.clip(res,*bounds)
-
-    def grad_xy(self,axis=(0,0),x=None,a=None,bounds=None):
-        x,a=self.unravel_args(x=x,a=a)
-        res=gradient_xy(f=self.f,
-            x=x,
-            a=a,
-            dx1=self.dx_matrix[axis[0]],
-            dx2=self.dx_matrix[axis[1]],
-            f_shape=self.f_shape,
-            normalize=self.normalize)
-        res = np.squeeze(res)
-        if bounds is None:
-            return res
-        else:
-            return np.clip(res,*bounds)
-
-    def grad_ab(self,axis=(0,0),x=None,a=None,bounds=None):
-        x,a=self.unravel_args(x=x,a=a)
-        res=gradient_ab(f=self.f,
-            x=x,
-            a=a,
-            da1=self.da_matrix[axis[0]],
-            da2=self.da_matrix[axis[1]],
-            f_shape=self.f_shape,
-            normalize=self.normalize)
-        res = np.squeeze(res)
-        if bounds is None:
-            return res
-        else:
-            return np.clip(res,*bounds)
+    def get_dim(self):
+        if self.function_and_derivatives in StatisticalManifold.a_gradients:
+            self.dim = self.a.shape[-1]
+        elif self.function_and_derivatives in StatisticalManifold.x_gradients:
+            while len(self.x.shape)<2:
+                self.x=np.expand_dims(self.x,axis=-1)
+            self.dim = self.x.shape[-1]
+        if self.dim<1:
+            self.dim = 1
     
-    def jac_x(self,x=None,a=None,bounds=None):
-        x,a=self.unravel_args(x=x,a=a)
-        res=jacobian_x(f=self.f,
-            x=x,
-            a=a,
-            dx=self.dx_matrix,
-            f_shape=self.f_shape,
-            normalize=self.normalize)
-        res = np.squeeze(res)
-        if bounds is None:
-            return res
-        else:
-            return np.clip(res,*bounds)
+    def get_h(self):
+        #interpret number as scaled identity matrix
+        if isinstance(self.h,(float,int)):
+            self.h = np.eye(self.dim,dtype=type(self.h))*self.h
 
-    def jac_a(self,x=None,a=None,bounds=None):
-        x,a=self.unravel_args(x=x,a=a)
-        res=jacobian_a(f=self.f,
-            x=x,
-            a=a,
-            da=self.da_matrix,
-            f_shape=self.f_shape,
-            normalize=self.normalize)
-        res = np.squeeze(res)
-        if bounds is None:
-            return res
-        else:
-            return np.clip(res,*bounds)
+    def get_tangents(self):
+        #interpret number as # of tangent rays in a plane
+        if isinstance(self.tangents,(int,float)):
+            N = round(self.tangents)
+            n = self.dim
+            if n==1:
+                self.tangents = np.array([[np.cos(2*np.pi*i/N)] for i in range(N)])
+            else: #default to hyperplane that is nonzero only along 0 and -1 axes
+                self.tangents = np.array([[np.cos(2*np.pi*i/N)]+[0]*(n-2)+[np.sin(2*np.pi*i/N)] 
+                    for i in range(N)])
+        self.N = self.tangents.shape[0]
 
-    def hess_x(self,x=None,a=None,bounds=None):
-        x,a=self.unravel_args(x=x,a=a)
-        res=hessian_x(f=self.f,
-            x=x,
-            a=a,
-            dx=self.dx_matrix,
-            f_shape=self.f_shape,
-            normalize=self.normalize)
-        res = np.squeeze(res)
-        if bounds is None:
-            return res
-        else:
-            return np.clip(res,*bounds)
-    
-    def hess_a(self,x=None,a=None,bounds=None):
-        x,a=self.unravel_args(x=x,a=a)
-        res=hessian_a(f=self.f,
-            x=x,
-            a=a,
-            da=self.da_matrix,
-            f_shape=self.f_shape,
-            normalize=self.normalize)
-        res = np.squeeze(res)
-        if bounds is None:
-            return res
-        else:
-            return np.clip(res,*bounds)
-
-    def gradient(self,x_or_a='x',axis=0,x=None,a=None,bounds=None):
-        assert (x_or_a == 'x') or (x_or_a == 'a'), "Require x_or_a == 'x' or x_or_a == 'a'"
-        if x_or_a=='x':
-            if isinstance(axis,int):
-                return self.grad_x(axis=axis,x=x,a=a,bounds=bounds)
-            else:
-                return self.grad_xy(axis=axis,x=x,a=a,bounds=bounds)
-        else:
-            if isinstance(axis,int):
-                return self.grad_a(axis=axis,x=x,a=a,bounds=bounds)
-            else:
-                return self.grad_ab(axis=axis,x=x,a=a,bounds=bounds)
-
-    def jacobian(self,x_or_a='a',x=None,a=None,bounds=None):
-        assert (x_or_a == 'x') or (x_or_a == 'a'), "Require x_or_a == 'x' or x_or_a == 'a'"
-        if x_or_a=='x':
-            return self.jac_x(x=x,a=a,bounds=bounds)
-        else:
-            return self.jac_a(x=x,a=a,bounds=bounds)
-
-    def hessian(self,x_or_a='a',x=None,a=None,bounds=None):
-        assert (x_or_a == 'x') or (x_or_a == 'a'), "Require x_or_a == 'x' or x_or_a == 'a'"
-        if x_or_a=='x':
-            return self.hess_x(x=x,a=a,bounds=bounds)
-        else:
-            return self.hess_a(x=x,a=a,bounds=bounds)
-
-    def plot(self,a=None,x=None,y=None,ja=None,jx=None,ha=None,hx=None,xlim=None,ylim=None,
-        log = False
-        ):
-        if a is None:
-            a=self.a[0]
-        if x is None:
-            x=self.x
-        if y is None:
-            y=self.y
-        if ja is None:
-            ja=self.ja
-        if jx is None:
-            jx=self.jx
-        if ha is None:
-            ha=self.ha
-        if hx is None:
-            hx=self.hx
-        title = self.fname+' and its derivatives'
-        if log: #log transform data
-            title = 'Log '+title
-            log_jac,log_hess=log_deriv(y=y,jacobian=ja,hessian=ha)
-            log_jx = -jx/y
-            log_hx = log_jx**2 - hx/y
-            log_y = -np.log(y)
-            #rename locals
-            y=log_y 
-            ja=log_jac
-            ha=log_hess
-            jx = log_hx
-            hx = log_hx
-            #store
-            self.log_y = y 
-            self.log_ja = ja
-            self.log_ha = ha
-            self.log_jx = jx
-            self.log_hx = hx
+    def __call__(self):
+        res = tangent_space(
+            f=self.f,x=self.x,a=self.a,
+            h=self.h,
+            tangents=self.tangents,
+            T = self.T, 
+            f_shape = self.f_shape,
+            function_and_derivatives = self.function_and_derivatives,
+            metric_and_connection = self.metric_and_connection)
             
+        if self.squeeze:
+            res = map(np.squeeze, res)         
+        
+        self.function,self.jacobian,self.hessian,self.metric,self.dmetric,self.invmetric, \
+            self.connection,self.position,self.velocity = res
+        
+        if self.density:
+            self.function /= self.dx
+            self.jacobian /= self.dx
+            self.hessian /= self.dx
+            #self.invmetric /= self.dx
+            #self.metric *= self.dx
+            #self.dmetric *= self.dx
+            #self.connection *= self.dx
+
+    def plot_function(self,i=0,t=0,xlim=None,ylim=None):
+        title = self.f.__name__+' and its derivatives'
+        x = self.x
+        y = self.function[i,t]
+        ja = self.jacobian[i,t]
+        ha = self.hessian[i,t]
+        a = self.position[i,t]
         plt.plot(x,y,label=r'$f(x'+f',{a[0]},{a[1]}'+r')$')
         for j in range(ja.shape[0]):
             s=r'$\partial_{a_{'+f'{j}'+r'}}f$'
@@ -732,8 +540,6 @@ class StatisticalManifold:
             else:
                 s=r'$\partial^{2}_{a_{'+f'{h[0]}'+r'}}f$'
             plt.plot(x,ha[h],label=s,linestyle='dashdot')
-        plt.plot(x,jx,label=r'$\partial_{x}f$',linestyle='dotted')
-        plt.plot(x,hx,label=r'$\partial^{2}_{x}f$',linestyle='dotted')
         plt.legend(loc='upper center', bbox_to_anchor=(0.5, 1.42),
                 ncol=3, fancybox=True, shadow=True)
         plt.xlabel('x')
@@ -745,154 +551,83 @@ class StatisticalManifold:
             plt.ylim(*ylim)
         plt.tight_layout()
         plt.show()
-
-    def metric(self,a=None,x=None):
-        x,a=self.unravel_args(x=x,a=a)
-        dx=(x.max()-x.min())/x.size
-        h=self.hess_a(x=x,a=a)
-        j=self.jac_a(x=x,a=a)
-        y=self(x=x,a=a)
-        _,lh=log_deriv(y=y,jacobian=j,hessian=h)
-        g=(lh*y).sum(axis=-1)*dx
-        return g
-
-    def positive_definite(self,g):
-        try:
-            np.linalg.cholesky(g)
-            return True
-        except:
-            print("Warning: Non-Riemannian metric; g is not positive-definite.")
-            return False
     
-    def inverse_metric(self,g=None,a=None,x=None):
-        if g is None:
-            x,a=self.unravel_args(x=x,a=a)
-            g=self.metric(self,a=a,x=x)
-        ginv = np.linalg.inv(g)
-        return ginv
-
-    def metric_jacobian_numeric(self,a=None,da=2.0*perturbation,x=None):
-        x,a=self.unravel_args(x=x,a=a)
-        a_dim = a.size
-        d=da
-        da=np.eye(a_dim)*(d)
-        dg=np.zeros((a_dim,a_dim,a_dim))
-        for adir in range(a_dim):
-            gup=self.metric(a=a+da[adir],x=x)
-            gdown=self.metric(a=a-da[adir],x=x)
-            dg[adir]=(gup-gdown)/(2.0*d)
-        return dg
-
-    def christoffel(self,a=None,x=None,y=None,jacobian=None,hessian=None,bias=nonzero):
-        x,a=self.unravel_args(x=x,a=a)
-        if y is None:
-            y=self(x=x,a=a)
-        if jacobian is None:
-            jacobian=self.jac_a(x=x,a=a)
-        if hessian is None:
-            hessian=self.hess_a(x=x,a=a)
-        return christoffel(x=x,y=y,jacobian=jacobian,hessian=hessian,bias=bias)
-
-    def geodesic_equation(self,a=None,da=None,T=100):
-        if a is None:
-            a=self.a[0]
-        if da is None:
-            da=self.da_matrix[0]
-        dt=float(1/T)
-        position=np.zeros((T,)+a.shape)
-        position[0]=a
-        velocity=np.zeros((T,)+a.shape)
-        velocity[0]=da
-
-        def F(pos,vel):
-            g,ginv,dg,gamma = self.christoffel(a=pos)
-            acceleration = geodesic(dx=vel,gamma=gamma)
-            return acceleration
-
-        for i in range(T-1):
-            position[i+1] = position[i] + velocity[i]*dt
-            velocity[i+1] = velocity[i] + F(position[i],velocity[i])*dt
-
-        return position
-
-    def geodesics(self,a=None,N=16,T=25,R=1):
-        if a is None:
-            a=self.a[0]
-        dA=np.array([[np.cos(2*np.pi*i/N),np.sin(2*np.pi*i/N)] for i in range(N)])
-        pos=np.zeros((N,T,)+a.shape)
-        for i in range(N):
-            da=dA[i]
-            S=(da.size,da.size)
-            #normalize using g_ij*dx^i*dx^j; inner product on curved manifold
-            norm=np.array([self.g[i,j]*da[i]*da[j] for (i,j) in np.ndindex(S)]).sum()
-            norm=np.sqrt(norm)
-            da=R*da/norm
-            pos[i]=self.geodesic_equation(a=a,da=da,T=T)
-        return pos
-
-
-    def plot_geodesics(self,
-        pos=None,
-        title=r'Geodesics of the Normal Distribution $N(\mu,\sigma)$',
-        xlabel=r'$\mu$',
-        ylabel=r'$\sigma$',
-        fontsize=16,
-        ):
-
-        if pos is None:
-            pos=self.geodesics()
-
-        fig, ax = plt.subplots()
-        N,T,D = pos.shape #number of tangents, steps, dimensions
-        #get as stacked D-dim points
-        y = pos.reshape(N*T,D).T
-        #label colors according to angle
-        colors = np.zeros((N,T)) #for sequential steps along path
-        qolors = np.zeros((T,N)) #for instantaneous hypersurfaces
-        for i in range(N):
-            colors[i]+=i/N
-        for j in range(T):
-            qolors[j]=np.array([i/N for i in range(N)])
-        colors = colors.reshape(N*T)
-        ax.scatter(*y,c=colors,cmap='hsv')
-        qolors=qolors*2*np.pi
-        for t in range(T): #plot level sets; connect instantaneous times
-            #append origin for complete rotation
-            u=np.append(pos[:,t,0],pos[0,t,0])
-            v=np.append(pos[:,t,1],pos[0,t,1])
-            points=np.array([u, v]).T.reshape(-1, 1, 2)
-            segments = np.concatenate([points[:-1], points[1:]], axis=1)
-
-        # Create a continuous norm to map from data points to colors
-            norm = plt.Normalize(qolors[t].min(), qolors[t].max())
-            lc = LineCollection(segments, cmap='hsv', norm=norm)
-        # Set the values used for colormapping
-            lc.set_array(qolors[t])
-            lc.set_linewidth(0.5)
-            line = ax.add_collection(lc)
-        #break into octants defined by the orthogonal axes
-        #and the lines y=x and y=-x
-        for i in range(N):
-            if i%4==0: #original axes
-                linewidth=1.
-                ls='-'
-                color='black'
-            elif i%4==2: #y=+-x
-                linewidth=1.
-                ls='--'
-                color='white'
-            else: #inbetween quadrants
-                linewidth=1
-                ls='-.'
-                color='gray'
-            ax.plot(pos[i,:,0],pos[i,:,1],color=color,linewidth=linewidth,ls=ls)
-
-        ax.set_xlabel(xlabel,fontsize=fontsize)
-        ax.set_ylabel(ylabel,fontsize=fontsize)
-        ax.set_title(title)
-        ax.yaxis.set_label_position("right")
-        ax.yaxis.tick_right()
-        fig.colorbar(line, ax=ax, label=f'Angle of initial unit tangent vector in radians',
-            orientation='vertical',location='left',shrink=1)
-        ax.grid(True)
-        force_aspect(ax,1)
+    def plot_geodesic(self,
+             i=0,
+             cmap=plt.cm.jet,
+             style='dark_background',
+             show=True,
+             ax=None,
+             fig=None,
+             figsize=(8,4),
+             fontsize=15,
+             x2lim=[0,8],
+             y2lim=[0,8]
+             ):
+        if (fig is None) or (ax is None):
+            fig,ax = plt.subplots(1,2,figsize=figsize)
+        #ax1: x,f(x,a) ; ax2: a0,a1
+        ax1,ax2 = ax
+        ax1.clear()
+        plt.style.use(style)
+        colors = cmap(np.linspace(0,1,self.T))
+        artists = []
+        clabel = r'$t$'
+        x1label = r'$x$'
+        y1label = 'f'+r'$(x,a(t))$'
+        for t in range(self.T):
+            artists+=[ax1.plot(self.x,self.function[i,t],color=colors[t])]
+        ax1.set_xlabel(x1label,fontsize=fontsize)
+        ax1.set_ylabel(y1label,fontsize=fontsize)
+        x2label = r'$a_{0}$'
+        y2label = r'$a_{1}$'
+        ax2.set_xlim(*x2lim)
+        ax2.set_ylim(*y2lim)
+        ax2.set_xlabel(x2label,fontsize=fontsize)
+        ax2.set_ylabel(y2label,fontsize=fontsize)
+        cmap2=cmap(np.linspace(0,1,self.T))
+        cl=color_line(self.position[i,:,0],self.position[i,:,1],cmap2,ax2,1.)
+        artists+=[list(np.ravel(cl))]
+        if show:
+            fig.colorbar(plt.cm.ScalarMappable(cmap=cmap),ax=ax2,label=clabel)
+            plt.show()
+        else:
+            return np.ravel(list(artists))
+        
+    def animate(self,fname='geodesic.mp4',
+                frames=360,fps=20,dpi=100,
+                figsize=(13,6),
+                fontsize = 18,
+                x2lim = [0,8],
+                y2lim = [0,8],
+                cmap=plt.cm.jet
+                ):
+        animation_kwargs = dict(
+            interval=1,
+            blit=False,
+            frames=frames,
+            repeat=False,
+            cache_frame_data = False,
+            save_count=frames
+        )
+        save_kwargs = dict(
+            filename=fname,
+            dpi=dpi,
+            writer=FFMpegWriter(fps=fps) if fname.split('.')[-1] == '.mp4' else (
+                PillowWriter(fps=fps) if fname.split('.')[-1] == '.gif' else None)
+        )
+        matplotlib.rcParams.update({'font.size': fontsize})
+        fig,ax = plt.subplots(1,2,figsize=figsize)
+        fig.colorbar(plt.cm.ScalarMappable(cmap=cmap),ax=ax[1],label=r'$t$')
+        plt.gcf().set_size_inches(figsize)    
+        cmap=cmap(np.linspace(0,1,self.T)) 
+        def _animate(i):
+            title = f'Geodesic path at {i}'+r'$\degree$'
+            artists = self.plot_geodesic(i=i,ax=ax,fig=fig,show=False,
+                                        figsize=figsize,fontsize=fontsize,
+                                        x2lim=x2lim,y2lim=y2lim)
+            fig.suptitle(title,fontsize=fontsize)
+            return artists
+            
+        ani = FuncAnimation(fig, _animate, **animation_kwargs)
+        ani.save(**save_kwargs)
